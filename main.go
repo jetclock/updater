@@ -46,7 +46,7 @@ func imageInit(destPath string) error {
 	return nil
 }
 
-func showImage(path, pidFile string) error {
+func showImage(path, pidFile string) (int, error) {
 	fehCmd := exec.Command("feh",
 		"--fullscreen",
 		"--hide-pointer",
@@ -54,22 +54,14 @@ func showImage(path, pidFile string) error {
 		path,
 	)
 	if err := fehCmd.Start(); err != nil {
-		return fmt.Errorf("starting feh: %w", err)
+		return 0, fmt.Errorf("starting feh: %w", err)
 	}
+	pid := fehCmd.Process.Pid
 	// Save PID for later cleanup
-	pid := strconv.Itoa(fehCmd.Process.Pid)
-	if err := os.WriteFile(pidFile, []byte(pid), 0644); err != nil {
-		return fmt.Errorf("writing pidfile: %w", err)
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0644); err != nil {
+		return 0, fmt.Errorf("writing pidfile: %w", err)
 	}
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigs
-		cleanupSplash(fehCmd.Process.Pid, pidFile)
-		os.Exit(0)
-	}()
-
-	return nil
+	return pid, nil
 }
 
 // cleanupSplash sends SIGTERM then SIGKILL to feh, and removes pidfile
@@ -103,9 +95,25 @@ func main() {
 		fmt.Fprintf(os.Stderr, "imageInit error: %v\n", err)
 		os.Exit(1)
 	}
-	if err := showImage(out, pidFile); err != nil {
+	// **always** clean up when main() returns:**
+	defer func() {
+		if err := stopImage(pidFile); err != nil && !os.IsNotExist(err) {
+			log.Printf("failed to stop splash: %v", err)
+		}
+	}()
+
+	if pid, err := showImage(out, pidFile); err != nil {
 		panic(err)
+	} else {
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-sigs
+			cleanupSplash(pid, pidFile)
+			os.Exit(0)
+		}()
 	}
+
 	// 1) figure out current version
 	var version string
 	if out, err := exec.Command(binary, "--version").Output(); err != nil {
