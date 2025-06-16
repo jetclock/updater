@@ -1,0 +1,32 @@
+name: Build Updater (ARM64)
+
+on:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Configure Git to use Personal Access Token for private modules
+        run: git config --global url."https://${{ secrets.GH_PAT_AW }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build updater for Linux/ARM64
+        run: |
+          mkdir -p bin
+          go build -o bin/jetclock-updater-linux-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jetclock-updater-linux-arm64
+          path: bin/jetclock-updater-linux-arm64

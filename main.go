@@ -1,0 +1,158 @@
+package main
+
+import (
+	"bytes"
+	_ "embed"
+	"fmt"
+	"github.com/jetclock/jetclock-sdk/pkg/hotspot"
+	"github.com/jetclock/jetclock-sdk/pkg/logger"
+	"github.com/jetclock/jetclock-sdk/pkg/update"
+	"github.com/jetclock/jetclock-sdk/pkg/wifi"
+	"log"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"syscall"
+)
+
+//go:embed update.png
+var updatePng []byte
+
+const repository = "jetclock/jetclock"
+const binary = "/home/jetclock/.jetclock/jetclock"
+
+// imageInit writes the embedded update.png to destPath if it doesn't already exist.
+// It will create any parent directories as needed.
+func imageInit(destPath string) error {
+	// Check if file already exists
+	if _, err := os.Stat(destPath); err == nil {
+		// already there
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("unable to stat %q: %w", destPath, err)
+	}
+
+	// Make sure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return fmt.Errorf("failed to create dirs for %q: %w", destPath, err)
+	}
+
+	// Write the embedded PNG out
+	if err := os.WriteFile(destPath, updatePng, 0o644); err != nil {
+		return fmt.Errorf("failed to write %q: %w", destPath, err)
+	}
+	return nil
+}
+
+func showImage(path, pidFile string) error {
+	fehCmd := exec.Command("feh",
+		"--fullscreen",
+		"--hide-pointer",
+		"--auto-zoom",
+		path,
+	)
+	if err := fehCmd.Start(); err != nil {
+		return fmt.Errorf("starting feh: %w", err)
+	}
+	// Save PID for later cleanup
+	pid := strconv.Itoa(fehCmd.Process.Pid)
+	if err := os.WriteFile(pidFile, []byte(pid), 0644); err != nil {
+		return fmt.Errorf("writing pidfile: %w", err)
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		cleanupSplash(fehCmd.Process.Pid, pidFile)
+		os.Exit(0)
+	}()
+
+	return nil
+}
+
+// cleanupSplash sends SIGTERM then SIGKILL to feh, and removes pidfile
+func cleanupSplash(pid int, pidFile string) {
+	// polite
+	syscall.Kill(pid, syscall.SIGTERM)
+	// ensure it's gone
+	syscall.Kill(pid, syscall.SIGKILL)
+	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+		log.Printf("warning: could not remove pidfile: %v", err)
+	}
+}
+func stopImage(pidFile string) error {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return err
+	}
+	pid, err := strconv.Atoi(string(data))
+	if err != nil {
+		return err
+	}
+	if err := exec.Command("kill", strconv.Itoa(pid)).Run(); err != nil {
+		return err
+	}
+	return os.Remove(pidFile)
+}
+func main() {
+	pidFile := "/tmp/feh.pid"
+	out := "/home/jetclock/images/update.png"
+	if err := imageInit(out); err != nil {
+		fmt.Fprintf(os.Stderr, "imageInit error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := showImage(out, pidFile); err != nil {
+		panic(err)
+	}
+	// 1) figure out current version
+	var version string
+	if out, err := exec.Command(binary, "--version").Output(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to get local version: %v\n", err)
+		version = "v0.0.1"
+	} else {
+		version = string(bytes.TrimSpace(out))
+	}
+
+	cfg := hotspot.DefaultConfig
+
+	// If already on Wi-Fi:
+	if wifi.IsConnected() {
+		logger.Log.Info("✅ Wi-Fi OK — checking for update of", "binary", binary)
+		if updated, err := update.AudoUpdateCommand(binary, version, repository); err != nil {
+			logger.Log.Errorf("Update failed: %v", err)
+		} else if updated {
+			logger.Log.Info("✅ Update applied — exiting")
+		}
+		//no need for an update. Let it continue.
+		return
+	}
+
+	// Not connected: try to connect
+	logger.Log.Info("📶 Not on Wi-Fi — attempting to connect to known network")
+	if err := wifi.Connect(); err == nil {
+		logger.Log.Info("✅ Connected — now checking for update of", "binary", binary)
+		if updated, err := update.AudoUpdateCommand(binary, version, repository); err != nil {
+			logger.Log.Errorf("Update failed after connect: %v", err)
+		} else if updated {
+			logger.Log.Info("✅ Update applied — exiting")
+		}
+		return
+	} else {
+		logger.Log.Warn("⚠️  Connect failed, falling back to hotspot:", "error", err)
+	}
+
+	// If we reach here, connect failed → start hotspot + captive-portal
+	if err := hotspot.StopHotspot(); err != nil {
+		logger.Log.Warn("Failed to clean up old hotspot:", "error", err)
+	}
+	hotspot.Start(cfg)
+
+	// serve the portal (blocking)
+	server, err := hotspot.NewServer(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create portal server: %v", err)
+	}
+	server.Start()
+}
