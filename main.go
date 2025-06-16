@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 //go:embed update.png
@@ -97,6 +98,7 @@ func main() {
 	}
 	// **always** clean up when main() returns:**
 	defer func() {
+		time.Sleep(45 * time.Second)
 		if err := stopImage(pidFile); err != nil && !os.IsNotExist(err) {
 			log.Printf("failed to stop splash: %v", err)
 		}
