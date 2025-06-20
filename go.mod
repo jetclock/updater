@@ -2,7 +2,7 @@ module github.com/jetclock/updater
 
 go 1.24.3
 
-require github.com/jetclock/jetclock-sdk v0.0.0-20250620091237-88629487784f
+require github.com/jetclock/jetclock-sdk v0.0.0-20250620092124-1372cbbed0dc
 
 require (
 	github.com/blang/semver v3.5.1+incompatible // indirect

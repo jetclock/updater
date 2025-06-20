@@ -134,12 +134,7 @@ func main() {
 	// If has a wifi (need to check for internet)s
 	if wifi.IsConnected() {
 		logger.Log.Info("✅ Wi-Fi OK — checking for update of", "binary", binary)
-		if updated, err := update.AudoUpdateCommand(binary, version, repository); err != nil {
-			logger.Log.Errorf("Update failed: %v", err)
-		} else if updated {
-			logger.Log.Info("✅ Update applied — exiting")
-		}
-		//no need for an update. Let it continue.
+		updateProcess(version)
 		return
 	}
 
@@ -147,11 +142,7 @@ func main() {
 	logger.Log.Info("📶 Not on Wi-Fi — attempting to connect to known network")
 	if err := wifi.Connect(); err == nil {
 		logger.Log.Info("✅ Connected — now checking for update of", "binary", binary)
-		if updated, err := update.AudoUpdateCommand(binary, version, repository); err != nil {
-			logger.Log.Errorf("Update failed after connect: %v", err)
-		} else if updated {
-			logger.Log.Info("✅ Update applied — exiting")
-		}
+		updateProcess(version)
 		return
 	} else {
 		logger.Log.Warn("⚠️  Connect failed, falling back to hotspot:", "error", err)
@@ -169,4 +160,17 @@ func main() {
 		log.Fatalf("Failed to create portal server: %v", err)
 	}
 	server.Start()
+}
+
+func updateProcess(version string) {
+	if updated, err := update.AudoUpdateCommand(binary, version, repository); err != nil {
+		fmt.Println("Failed to check update:", err)
+		logger.Log.Errorf("Update failed: %v", err)
+	} else if updated {
+		fmt.Println("Update succeeded")
+		logger.Log.Info("✅ Update applied — exiting")
+	}
+	fmt.Println("wifi was connected but seemingly got to here and am exiting")
+	//no need for an update. Let it continue.
+	return
 }
