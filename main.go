@@ -127,7 +127,7 @@ func main() {
 
 	cfg := hotspot.DefaultConfig
 
-	// If already on Wi-Fi:
+	// If has a wifi (need to check for internet)s
 	if wifi.IsConnected() {
 		logger.Log.Info("✅ Wi-Fi OK — checking for update of", "binary", binary)
 		if updated, err := update.AudoUpdateCommand(binary, version, repository); err != nil {
