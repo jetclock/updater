@@ -12,8 +12,8 @@ github.com/google/go-querystring v1.0.0/go.mod h1:odCYkC5MyYFN7vkCjXpyrEuKhc/BUO
 github.com/hpcloud/tail v1.0.0/go.mod h1:ab1qPbhIpdTxEkNHXyeSf5vhxWSCs/tWer42PpOxQnU=
 github.com/inconshreveable/go-update v0.0.0-20160112193335-8152e7eb6ccf h1:WfD7VjIE6z8dIvMsI4/s+1qr5EL+zoIGev1BQj1eoJ8=
 github.com/inconshreveable/go-update v0.0.0-20160112193335-8152e7eb6ccf/go.mod h1:hyb9oH7vZsitZCiBt0ZvifOrB+qc8PS5IiilCIb87rg=
-github.com/jetclock/jetclock-sdk v0.0.0-20250616135732-6688b21400fc h1:Y9BeFshQ3B8RHJ/Ha6HeZx0Y2bNnFg+lVN5IsHRKBhI=
-github.com/jetclock/jetclock-sdk v0.0.0-20250616135732-6688b21400fc/go.mod h1:OTDy3lqX4JUNEJKrtFCcWXJZHdGvRWAnt4171DLTQzQ=
+github.com/jetclock/jetclock-sdk v0.0.0-20250620091237-88629487784f h1:GM/iPlxXHFbhxW/Cyt91IlFjj6R7bFWBbRlViBsPKwE=
+github.com/jetclock/jetclock-sdk v0.0.0-20250620091237-88629487784f/go.mod h1:OTDy3lqX4JUNEJKrtFCcWXJZHdGvRWAnt4171DLTQzQ=
 github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
 github.com/kr/pty v1.1.1/go.mod h1:pFQYn66WHrOpPYNljwOMqo10TkYh1fy3cYio2l3bCsQ=
 github.com/kr/text v0.1.0/go.mod h1:4Jbv+DJW3UT/LiOwJeYQe1efqtUx/iVham/4vfdArNI=

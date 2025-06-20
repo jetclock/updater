@@ -127,7 +127,7 @@ func main() {
 	if err := logger.InitLogger(logger.LogToFile | logger.LogToStdout); err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
 	}
-	logger.Log.Info("Starting jetclock - received version", version)
+	logger.Log.Info("Starting jetclock - received version", "version", version)
 
 	cfg := hotspot.DefaultConfig
 
