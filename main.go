@@ -7,6 +7,7 @@ import (
 	"github.com/jetclock/jetclock-sdk/pkg/hotspot"
 	"github.com/jetclock/jetclock-sdk/pkg/logger"
 	"github.com/jetclock/jetclock-sdk/pkg/update"
+	"github.com/jetclock/jetclock-sdk/pkg/utils"
 	"github.com/jetclock/jetclock-sdk/pkg/wifi"
 	"log"
 	"os"
@@ -44,6 +45,7 @@ func imageInit(destPath string) error {
 	if err := os.WriteFile(destPath, updatePng, 0o644); err != nil {
 		return fmt.Errorf("failed to write %q: %w", destPath, err)
 	}
+	fmt.Println("wrote the image to ", destPath)
 	return nil
 }
 
@@ -54,6 +56,7 @@ func showImage(path, pidFile string) (int, error) {
 		"--auto-zoom",
 		path,
 	)
+	fmt.Println("about to show image")
 	if err := fehCmd.Start(); err != nil {
 		return 0, fmt.Errorf("starting feh: %w", err)
 	}
@@ -62,6 +65,7 @@ func showImage(path, pidFile string) (int, error) {
 	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0644); err != nil {
 		return 0, fmt.Errorf("writing pidfile: %w", err)
 	}
+	fmt.Println("image was started with pid ", pid)
 	return pid, nil
 }
 
@@ -90,6 +94,10 @@ func stopImage(pidFile string) error {
 	return os.Remove(pidFile)
 }
 func main() {
+	preRelease := true
+	if err := logger.InitLogger(logger.LogToFile | logger.LogToStdout); err != nil {
+		log.Fatalf("Failed to init logger: %v", err)
+	}
 	pidFile := "/tmp/feh.pid"
 	out := "/home/jetclock/images/update.png"
 	if err := imageInit(out); err != nil {
@@ -98,7 +106,6 @@ func main() {
 	}
 	// **always** clean up when main() returns:**
 	defer func() {
-		time.Sleep(45 * time.Second)
 		if err := stopImage(pidFile); err != nil && !os.IsNotExist(err) {
 			log.Printf("failed to stop splash: %v", err)
 		}
@@ -115,6 +122,7 @@ func main() {
 			os.Exit(0)
 		}()
 	}
+	logger.Log.Info("image should be showing now")
 
 	// 1) figure out current version
 	var version string
@@ -124,17 +132,13 @@ func main() {
 	} else {
 		version = string(bytes.TrimSpace(out))
 	}
-	if err := logger.InitLogger(logger.LogToFile | logger.LogToStdout); err != nil {
-		log.Fatalf("Failed to init logger: %v", err)
-	}
-	logger.Log.Info("Starting jetclock - received version", "version", version)
 
-	cfg := hotspot.DefaultConfig
+	logger.Log.Info("Starting jetclock update process - received version", "version", version)
 
 	// If has a wifi (need to check for internet)s
 	if wifi.IsConnected() {
 		logger.Log.Info("✅ Wi-Fi OK — checking for update of", "binary", binary)
-		updateProcess(version)
+		updateProcess(version, preRelease)
 		return
 	}
 
@@ -142,11 +146,13 @@ func main() {
 	logger.Log.Info("📶 Not on Wi-Fi — attempting to connect to known network")
 	if err := wifi.Connect(); err == nil {
 		logger.Log.Info("✅ Connected — now checking for update of", "binary", binary)
-		updateProcess(version)
+		updateProcess(version, preRelease)
 		return
 	} else {
 		logger.Log.Warn("⚠️  Connect failed, falling back to hotspot:", "error", err)
 	}
+
+	cfg := hotspot.DefaultConfig
 
 	// If we reach here, connect failed → start hotspot + captive-portal
 	if err := hotspot.StopHotspot(); err != nil {
@@ -162,15 +168,16 @@ func main() {
 	server.Start()
 }
 
-func updateProcess(version string) {
-	if updated, err := update.AudoUpdateCommand(binary, version, repository); err != nil {
+func updateProcess(version string, preRelease bool) {
+	if updated, err := update.AutoUpdateCommand(binary, version, repository, preRelease); err != nil {
 		fmt.Println("Failed to check update:", err)
 		logger.Log.Errorf("Update failed: %v", err)
 	} else if updated {
 		fmt.Println("Update succeeded")
-		logger.Log.Info("✅ Update applied — exiting")
+		logger.Log.Info("✅ Update applied — rebooting")
+		go utils.RunCommandOnly("sudo", "reboot")
 	}
-	fmt.Println("wifi was connected but seemingly got to here and am exiting")
-	//no need for an update. Let it continue.
+	//the app can be killed externally or it will just stay open for 45 seconds. Whichever happens first
+	time.Sleep(45 * time.Second)
 	return
 }
