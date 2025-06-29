@@ -2,7 +2,7 @@ module github.com/jetclock/updater
 
 go 1.24.3
 
-require github.com/jetclock/jetclock-sdk v0.0.0-20250627095352-b02ac9cf3f18
+require github.com/jetclock/jetclock-sdk v0.0.0-20250627143705-4265d0b60d50
 
 require (
 	github.com/amlwwalker/go-github-selfupdate v0.0.1 // indirect

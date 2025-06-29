@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
+	"github.com/jetclock/jetclock-sdk/pkg/config"
 	"github.com/jetclock/jetclock-sdk/pkg/hotspot"
 	"github.com/jetclock/jetclock-sdk/pkg/logger"
 	"github.com/jetclock/jetclock-sdk/pkg/update"
@@ -15,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -94,7 +96,6 @@ func stopImage(pidFile string) error {
 	return os.Remove(pidFile)
 }
 func main() {
-	preRelease := true
 	if err := logger.InitLogger(logger.LogToFile | logger.LogToStdout); err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
 	}
@@ -124,6 +125,10 @@ func main() {
 	}
 	logger.Log.Info("image should be showing now")
 
+	appConfig, err := config.LoadConfig()
+	if err != nil {
+		logger.Log.Errorf("could not load config: %v", err)
+	}
 	// 1) figure out current version
 	var version string
 	if out, err := exec.Command(binary, "--version").Output(); err != nil {
@@ -135,33 +140,47 @@ func main() {
 
 	logger.Log.Info("Starting jetclock update process - received version", "version", version)
 
-	// If has a wifi (need to check for internet)s
-	if wifi.IsConnected() {
-		logger.Log.Info("✅ Wi-Fi OK — checking for update of", "binary", binary)
-		updateProcess(version, preRelease)
-		return
-	}
-
-	// Not connected: try to connect
-	logger.Log.Info("📶 Not on Wi-Fi — attempting to connect to known network")
-	if err := wifi.Connect(); err == nil {
-		logger.Log.Info("✅ Connected — now checking for update of", "binary", binary)
-		updateProcess(version, preRelease)
-		return
+	fmt.Printf("config is %+v\n", appConfig)
+	config := hotspot.DefaultConfig //todo tidy this up. Too many configs...
+	if os.Getenv("JETCLOCK_PORT") != "" {
+		config.Port = os.Getenv("JETCLOCK_PORT")
 	} else {
-		logger.Log.Warn("⚠️  Connect failed, falling back to hotspot:", "error", err)
+		config.Port = "80" //hardcode this version to 80 for the pi
 	}
+	if !appConfig.ForceHotspot {
+		// serve the portal (blocking)
+		server, err := hotspot.NewServer(config)
+		if err != nil {
+			log.Fatalf("Failed to create portal server: %v", err)
+		}
+		server.AsyncStart(&sync.WaitGroup{})
+		// If has a wifi (need to check for internet)s
+		if wifi.IsConnected() {
+			logger.Log.Info("✅ Wi-Fi OK — checking for update of", "binary", binary)
+			updateProcess(version, appConfig.PreRelease)
+			return
+		}
 
-	cfg := hotspot.DefaultConfig
+		// Not connected: try to connect
+		logger.Log.Info("📶 Not on Wi-Fi — attempting to connect to known network")
+		if err := wifi.Connect(); err == nil {
+			logger.Log.Info("✅ Connected — now checking for update of", "binary", binary)
+			updateProcess(version, appConfig.PreRelease)
+			return
+		} else {
+			logger.Log.Warn("⚠️  Connect failed, falling back to hotspot:", "error", err)
+		}
+
+	}
 
 	// If we reach here, connect failed → start hotspot + captive-portal
 	if err := hotspot.StopHotspot(); err != nil {
 		logger.Log.Warn("Failed to clean up old hotspot:", "error", err)
 	}
-	hotspot.Start(cfg)
+	hotspot.Start(config)
 
 	// serve the portal (blocking)
-	server, err := hotspot.NewServer(cfg)
+	server, err := hotspot.NewServer(config)
 	if err != nil {
 		log.Fatalf("Failed to create portal server: %v", err)
 	}
