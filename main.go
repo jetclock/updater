@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"fmt"
 	"github.com/jetclock/jetclock-sdk/pkg/config"
 	"github.com/jetclock/jetclock-sdk/pkg/hotspot"
 	"github.com/jetclock/jetclock-sdk/pkg/logger"
+	"github.com/jetclock/jetclock-sdk/pkg/statusimg"
 	"github.com/jetclock/jetclock-sdk/pkg/update"
 	"github.com/jetclock/jetclock-sdk/pkg/utils"
 	"github.com/jetclock/jetclock-sdk/pkg/wifi"
@@ -15,8 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
-	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -27,108 +28,64 @@ var updatePng []byte
 const repository = "jetclock/jetclock"
 const binary = "/home/jetclock/.jetclock/jetclock"
 
-// imageInit writes the embedded update.png to destPath if it doesn't already exist.
-// It will create any parent directories as needed.
-func imageInit(destPath string) error {
-	// Check if file already exists
-	if _, err := os.Stat(destPath); err == nil {
-		// already there
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("unable to stat %q: %w", destPath, err)
-	}
+var updateFinished atomic.Bool // true when updateProcess() returns
+var inHotspot atomic.Bool      // set true right after hotspot.Start() succeeds
 
-	// Make sure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return fmt.Errorf("failed to create dirs for %q: %w", destPath, err)
-	}
-
-	// Write the embedded PNG out
-	if err := os.WriteFile(destPath, updatePng, 0o644); err != nil {
-		return fmt.Errorf("failed to write %q: %w", destPath, err)
-	}
-	fmt.Println("wrote the image to ", destPath)
-	return nil
-}
-
-func showImage(path, pidFile string) (int, error) {
-	fehCmd := exec.Command("feh",
-		"--fullscreen",
-		"--hide-pointer",
-		"--auto-zoom",
-		path,
-	)
-	fmt.Println("about to show image")
-	if err := fehCmd.Start(); err != nil {
-		return 0, fmt.Errorf("starting feh: %w", err)
-	}
-	pid := fehCmd.Process.Pid
-	// Save PID for later cleanup
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0644); err != nil {
-		return 0, fmt.Errorf("writing pidfile: %w", err)
-	}
-	fmt.Println("image was started with pid ", pid)
-	return pid, nil
-}
-
-// cleanupSplash sends SIGTERM then SIGKILL to feh, and removes pidfile
-func cleanupSplash(pid int, pidFile string) {
-	// polite
-	syscall.Kill(pid, syscall.SIGTERM)
-	// ensure it's gone
-	syscall.Kill(pid, syscall.SIGKILL)
-	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
-		log.Printf("warning: could not remove pidfile: %v", err)
-	}
-}
-func stopImage(pidFile string) error {
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		return err
-	}
-	pid, err := strconv.Atoi(string(data))
-	if err != nil {
-		return err
-	}
-	if err := exec.Command("kill", strconv.Itoa(pid)).Run(); err != nil {
-		return err
-	}
-	return os.Remove(pidFile)
-}
 func main() {
-	if err := logger.InitLogger(logger.LogToFile | logger.LogToStdout); err != nil {
+	if err := logger.InitLogger(logger.LogToFile|logger.LogToStdout, filepath.Join("/home", "jetclock")); err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
 	}
-	pidFile := "/tmp/feh.pid"
-	out := "/home/jetclock/images/update.png"
-	if err := imageInit(out); err != nil {
-		fmt.Fprintf(os.Stderr, "imageInit error: %v\n", err)
-		os.Exit(1)
-	}
+
+	// -------------------------------------------------------------------
+	// Signal handling  (Ctrl-C / SIGTERM / SIGUSR1)
+	// -------------------------------------------------------------------
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh,
+		os.Interrupt,    // == SIGINT (Ctrl-C)
+		syscall.SIGTERM, // graceful stop
+		syscall.SIGUSR1, // JetClock DOM ready
+	)
+
+	go func() {
+		for sig := range sigCh {
+			switch sig {
+
+			// JetClock tells us its UI is ready
+			case syscall.SIGUSR1:
+				if updateFinished.Load() && !inHotspot.Load() {
+					statusimg.Stop() // hide splash now
+					logger.Log.Info("🖼️  Splash cleared on SIGUSR1")
+				}
+
+			// Any “quit” signal → tidy up and exit
+			case os.Interrupt, syscall.SIGTERM:
+				statusimg.Stop() // kill feh, rm pidfile
+				os.Exit(0)
+			}
+		}
+	}()
+
 	// **always** clean up when main() returns:**
 	defer func() {
-		if err := stopImage(pidFile); err != nil && !os.IsNotExist(err) {
+		if err := statusimg.Stop(); err != nil && !os.IsNotExist(err) {
 			log.Printf("failed to stop splash: %v", err)
 		}
 	}()
 
-	if pid, err := showImage(out, pidFile); err != nil {
-		panic(err)
-	} else {
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			<-sigs
-			cleanupSplash(pid, pidFile)
-			os.Exit(0)
-		}()
+	// Show the *update* splash first
+	err := statusimg.Show(statusimg.UpdateStarting)
+	if err != nil {
+		logger.Log.Errorf("could not show update image %v", err)
 	}
+	defer statusimg.Stop()
 	logger.Log.Info("image should be showing now")
 
-	appConfig, err := config.LoadConfig()
+	logger.Log.Info("config location is " + filepath.Join("/home", "jetclock", ".config", "jetclock", "config.yaml"))
+	appConfig, err := config.LoadConfig(filepath.Join("/home", "jetclock", ".config", "jetclock", "config.yaml"))
 	if err != nil {
-		logger.Log.Errorf("could not load config: %v", err)
+		logger.Log.Infof("could not load config: %v", err)
 	}
+	logger.Log.Infof("config is %+v\n", appConfig)
 	// 1) figure out current version
 	var version string
 	if out, err := exec.Command(binary, "--version").Output(); err != nil {
@@ -140,51 +97,77 @@ func main() {
 
 	logger.Log.Info("Starting jetclock update process - received version", "version", version)
 
-	fmt.Printf("config is %+v\n", appConfig)
 	config := hotspot.DefaultConfig //todo tidy this up. Too many configs...
 	if os.Getenv("JETCLOCK_PORT") != "" {
 		config.Port = os.Getenv("JETCLOCK_PORT")
 	} else {
 		config.Port = "80" //hardcode this version to 80 for the pi
 	}
+	internetOK := false
+
 	if !appConfig.ForceHotspot {
-		// serve the portal (blocking)
-		server, err := hotspot.NewServer(config)
-		if err != nil {
-			log.Fatalf("Failed to create portal server: %v", err)
-		}
-		server.AsyncStart(&sync.WaitGroup{})
-		// If has a wifi (need to check for internet)s
-		if wifi.IsConnected() {
-			logger.Log.Info("✅ Wi-Fi OK — checking for update of", "binary", binary)
-			updateProcess(version, appConfig.PreRelease)
-			return
-		}
-
-		// Not connected: try to connect
-		logger.Log.Info("📶 Not on Wi-Fi — attempting to connect to known network")
-		if err := wifi.Connect(); err == nil {
-			logger.Log.Info("✅ Connected — now checking for update of", "binary", binary)
-			updateProcess(version, appConfig.PreRelease)
-			return
+		// Fast path: already online?
+		if wifi.HasInternet() { // HasInternet == VerifyInternet
+			internetOK = true
+			logger.Log.Info("✅ Existing Internet connection detected")
 		} else {
-			logger.Log.Warn("⚠️  Connect failed, falling back to hotspot:", "error", err)
+			// Try once to re-connect to any known network (20-s budget)
+			logger.Log.Info("📶 Attempting to connect to a known Wi-Fi network")
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			if err := wifi.Connect(ctx); err == nil { // Connect() includes VerifyInternet
+				internetOK = true
+				logger.Log.Info("✅ Reconnected successfully")
+			} else {
+				logger.Log.Warn("⚠️  Reconnect failed:", "error", err)
+			}
+			cancel() // free timer regardless of outcome
 		}
-
 	}
 
-	// If we reach here, connect failed → start hotspot + captive-portal
-	if err := hotspot.StopHotspot(); err != nil {
-		logger.Log.Warn("Failed to clean up old hotspot:", "error", err)
-	}
-	hotspot.Start(config)
+	// ----------------------------------------------------------------------
+	// 1️⃣  Act on the result
+	// ----------------------------------------------------------------------
+	if internetOK {
+		logger.Log.Info("🔄 Running update process")
+		go updateProcess(version, appConfig.PreRelease)
+		// Internet is live: ensure hotspot is down in case it was left over
+		hotspot.StopHotspot()
+	} else {
+		logger.Log.Info("🚫 No Internet — starting hotspot")
 
-	// serve the portal (blocking)
+		statusimg.Show(statusimg.HotspotPNG) // Hotspot running
+		if err != nil {
+			logger.Log.Errorf("could not show hotspot image %v", err)
+		}
+		hotspot.StopHotspot() // clean slate
+		if err := hotspot.Start(config); err != nil {
+			logger.Log.Error("❌ Failed to start hotspot:", "error", err)
+		} else {
+			inHotspot.Store(true)
+		}
+	}
+
+	// ----------------------------------------------------------------------
+	// 2️⃣  In every case, serve the captive-portal UI
+	// ----------------------------------------------------------------------
 	server, err := hotspot.NewServer(config)
 	if err != nil {
 		log.Fatalf("Failed to create portal server: %v", err)
 	}
-	server.Start()
+	/* ----------  NEW  --------------------------------------------------- */
+	// After 45 s: hide whatever splash image is still up.
+	time.AfterFunc(45*time.Second, func() {
+		statusimg.Stop()
+		logger.Log.Info("🖼️  Splash image cleared after 45s")
+	})
+	// After 5 min: stop splash (just in case) and exit the updater.
+	// That lets JetClock (or whatever systemd service) restart the main app.
+	time.AfterFunc(5*time.Minute, func() {
+		logger.Log.Info("⏱  5-minute window elapsed — shutting down updater")
+		statusimg.Stop()
+		os.Exit(0)
+	})
+	server.Start() // blocking
 }
 
 func updateProcess(version string, preRelease bool) {
@@ -194,9 +177,14 @@ func updateProcess(version string, preRelease bool) {
 	} else if updated {
 		fmt.Println("Update succeeded")
 		logger.Log.Info("✅ Update applied — rebooting")
+		//todo show a rebooting image as the update succeeded.
 		go utils.RunCommandOnly("sudo", "reboot")
+
 	}
-	//the app can be killed externally or it will just stay open for 45 seconds. Whichever happens first
-	time.Sleep(45 * time.Second)
+	updateFinished.Store(true)
+	err := statusimg.Show(statusimg.UpdateComplete)
+	if err != nil {
+		logger.Log.Errorf("could not show hotspot image %v", err)
+	}
 	return
 }

@@ -16,3 +16,5 @@ require (
 	golang.org/x/oauth2 v0.26.0 // indirect
 	gopkg.in/yaml.v2 v2.2.1 // indirect
 )
+
+replace github.com/jetclock/jetclock-sdk => /Users/alexwalker/go/src/github.com/jetclock/jetclock-sdk
