@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"flag"
 	"fmt"
 	"github.com/jetclock/jetclock-sdk/pkg/config"
 	"github.com/jetclock/jetclock-sdk/pkg/hotspot"
@@ -31,11 +32,35 @@ const binary = "/home/jetclock/.jetclock/jetclock"
 var updateFinished atomic.Bool // true when updateProcess() returns
 var inHotspot atomic.Bool      // set true right after hotspot.Start() succeeds
 
+func waitUntilReady() {
+	for {
+		if updateFinished.Load() && !inHotspot.Load() {
+			statusimg.Stop()
+			logger.Log.Info("🖼️  Splash cleared (update done & Wi-Fi online)")
+			return
+		}
+		time.Sleep(300 * time.Millisecond) // light-weight polling
+	}
+}
+
 func main() {
-	if err := logger.InitLogger(logger.LogToFile|logger.LogToStdout, filepath.Join("/home", "jetclock")); err != nil {
+	if err := logger.InitLogger(logger.LogToFile|logger.LogToStdout, filepath.Join("/home", "jetclock"), ""); err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
 	}
+	logger.Log.Infof("📍 JetClock Updater started with PID %d", os.Getpid())
 
+	reboot := flag.Bool("reboot", false, "Reboot the OS")
+
+	flag.Parse()
+
+	if *reboot {
+		fmt.Println("attempting reboot")
+		utils.Reboot()
+	}
+	err := statusimg.Show(statusimg.StartingUp)
+	if err != nil {
+		logger.Log.Errorf("could not show update image %v", err)
+	}
 	// -------------------------------------------------------------------
 	// Signal handling  (Ctrl-C / SIGTERM / SIGUSR1)
 	// -------------------------------------------------------------------
@@ -52,10 +77,8 @@ func main() {
 
 			// JetClock tells us its UI is ready
 			case syscall.SIGUSR1:
-				if updateFinished.Load() && !inHotspot.Load() {
-					statusimg.Stop() // hide splash now
-					logger.Log.Info("🖼️  Splash cleared on SIGUSR1")
-				}
+				logger.Log.Info("received SIGUSR1 signal to close the images to show the clock.")
+				go waitUntilReady() // do the check in its own goroutine
 
 			// Any “quit” signal → tidy up and exit
 			case os.Interrupt, syscall.SIGTERM:
@@ -72,12 +95,6 @@ func main() {
 		}
 	}()
 
-	// Show the *update* splash first
-	err := statusimg.Show(statusimg.UpdateStarting)
-	if err != nil {
-		logger.Log.Errorf("could not show update image %v", err)
-	}
-	defer statusimg.Stop()
 	logger.Log.Info("image should be showing now")
 
 	logger.Log.Info("config location is " + filepath.Join("/home", "jetclock", ".config", "jetclock", "config.yaml"))
@@ -128,6 +145,7 @@ func main() {
 	// 1️⃣  Act on the result
 	// ----------------------------------------------------------------------
 	if internetOK {
+		defer statusimg.Stop()
 		logger.Log.Info("🔄 Running update process")
 		go updateProcess(version, appConfig.PreRelease)
 		// Internet is live: ensure hotspot is down in case it was left over
@@ -135,7 +153,7 @@ func main() {
 	} else {
 		logger.Log.Info("🚫 No Internet — starting hotspot")
 
-		statusimg.Show(statusimg.HotspotPNG) // Hotspot running
+		statusimg.Show(statusimg.HotspotMode)
 		if err != nil {
 			logger.Log.Errorf("could not show hotspot image %v", err)
 		}
@@ -154,16 +172,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create portal server: %v", err)
 	}
-	/* ----------  NEW  --------------------------------------------------- */
-	// After 45 s: hide whatever splash image is still up.
-	time.AfterFunc(45*time.Second, func() {
-		statusimg.Stop()
-		logger.Log.Info("🖼️  Splash image cleared after 45s")
-	})
-	// After 5 min: stop splash (just in case) and exit the updater.
-	// That lets JetClock (or whatever systemd service) restart the main app.
-	time.AfterFunc(5*time.Minute, func() {
-		logger.Log.Info("⏱  5-minute window elapsed — shutting down updater")
+
+	time.AfterFunc(20*time.Minute, func() { //fixme: move to config
+		logger.Log.Info("⏱  10-minute window elapsed — shutting down updater")
 		statusimg.Stop()
 		os.Exit(0)
 	})
@@ -171,6 +182,7 @@ func main() {
 }
 
 func updateProcess(version string, preRelease bool) {
+	defer updateFinished.Store(true)
 	if updated, err := update.AutoUpdateCommand(binary, version, repository, preRelease); err != nil {
 		fmt.Println("Failed to check update:", err)
 		logger.Log.Errorf("Update failed: %v", err)
@@ -178,13 +190,12 @@ func updateProcess(version string, preRelease bool) {
 		fmt.Println("Update succeeded")
 		logger.Log.Info("✅ Update applied — rebooting")
 		//todo show a rebooting image as the update succeeded.
-		go utils.RunCommandOnly("sudo", "reboot")
-
-	}
-	updateFinished.Store(true)
-	err := statusimg.Show(statusimg.UpdateComplete)
-	if err != nil {
-		logger.Log.Errorf("could not show hotspot image %v", err)
+		err = statusimg.Show(statusimg.UpdateComplete)
+		if err != nil {
+			logger.Log.Errorf("could not show update image %v", err)
+		}
+		time.Sleep(5 * time.Second)
+		utils.Reboot()
 	}
 	return
 }
